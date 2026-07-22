@@ -9,7 +9,7 @@ This project is intentionally a single, portfolio-ready system that demonstrates
 | Embeddings | English question vectors | Implemented |
 | Vector database / semantic search | MongoDB Atlas `$vectorSearch` over verified Q&A | Implemented |
 | Context-aware retrieval | Crop and location filters on vector search | Implemented |
-| Conversation persistence | Node API + MongoDB `conversations` collection | Implemented |
+| Conversation persistence | FastAPI + MongoDB `conversations` collection | Implemented |
 | RAG | Trusted agricultural document ingestion and chunk retrieval | Implemented |
 | LangChain | Document loaders, chunking, retrievers, prompt templates | Implemented |
 | LangGraph | Explicit state graph for the assistant workflow | Implemented |
@@ -21,9 +21,20 @@ This project is intentionally a single, portfolio-ready system that demonstrates
 
 ## Portfolio flow
 
-`React → Node API → FastAPI → translate/extract → embedding + Atlas Vector Search → reuse or RAG → LLM → translate → React`
+`React → FastAPI → translate/extract → embedding + Atlas Vector Search → reuse or agent (tools) → LLM → translate → React`
 
 Each stage is intentionally separate, so you can explain its responsibility, data, and evaluation method in interviews.
+
+## Architecture change: Node backend removed (2026-07-23)
+
+The system started as three services (`React → Node → FastAPI`) with Node acting as a
+public gateway (CORS, request validation, conversation persistence) in front of an
+"internal" FastAPI service. That gateway layer was removed — CORS, validation, and
+conversation persistence moved into FastAPI itself (`app/main.py`'s `/api/chat`/
+`/api/chat/stream` endpoints, `app/conversations.py`), and the frontend now calls
+FastAPI directly (via Vite's dev proxy, retargeted from Node's port 4001 to FastAPI's
+8000). CORS is wide open (`allow_origins=["*"]`) for this learning project — restrict it
+for real deployments. See [README.md](README.md) for the current two-service setup.
 
 ## LangChain
 

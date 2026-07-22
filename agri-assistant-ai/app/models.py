@@ -13,6 +13,8 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     answer: str
+    # Set by the endpoint layer after process_question() returns; workflow.py doesn't know about conversation IDs.
+    conversation_id: str = Field(default="", alias="conversationId")
     question_english: str = Field(alias="questionEnglish")
     crop: str | None = None
     location: str | None = None

@@ -1,10 +1,16 @@
 # Multilingual Agri Q&A System
 
-Three independently runnable services form the assistant:
+Two independently runnable services form the assistant:
 
-- `agri-assistant-frontend` — React + TypeScript user interface; calls only the Node API.
-- `agri-assistant-backend` — Node.js + TypeScript + Express; validates public requests, manages conversations, and calls the internal AI service.
-- `agri-assistant-ai` — Python + FastAPI; owns translation, embeddings, semantic search, RAG, LangGraph, tools, and answer generation.
+- `agri-assistant-frontend` — React + TypeScript user interface; calls the AI service directly.
+- `agri-assistant-ai` — Python + FastAPI; public-facing API (CORS enabled, request validation, conversation persistence) plus translation, embeddings, semantic search, RAG, LangGraph, tools, and answer generation.
+
+There used to be a third, Node/Express service (`agri-assistant-backend`) sitting between
+the frontend and the AI service as a public gateway. It was removed — CORS, request
+validation, and conversation persistence all moved into FastAPI (`app/main.py`,
+`app/conversations.py`) — so the frontend now talks to the AI service directly. CORS is
+wide open (`allow_origins=["*"]`) for this learning project; restrict it before any real
+deployment.
 
 ## Run locally
 
@@ -19,28 +25,21 @@ uvicorn app.main:app --reload --port 8000
 ```
 
 ```powershell
-cd agri-assistant-backend
-pnpm install
-pnpm run dev
-```
-
-```powershell
 cd agri-assistant-frontend
 pnpm install
 pnpm run dev
 ```
 
-The frontend runs at `http://localhost:5173`, Node at `http://localhost:4001`, and FastAPI at `http://localhost:8000`.
+The frontend runs at `http://localhost:5173` and proxies `/api` to FastAPI at
+`http://localhost:8000` (see `vite.config.ts`).
 
 ## Request flow
 
-`React → POST /api/chat → Node API → POST /internal/chat → Python AI service → Node API → React`
-
-Only the Node API is public. The Python service is an internal boundary and must not be called directly by the browser.
+`React → POST /api/chat (or /api/chat/stream) → FastAPI → React`
 
 ## MongoDB Atlas and semantic reuse
 
-Set the same `MONGODB_URI` and `MONGODB_DATABASE` in both `agri-assistant-backend/.env` and `agri-assistant-ai/.env`. The Node API stores conversation messages in the `conversations` collection.
+Set `MONGODB_URI` and `MONGODB_DATABASE` in `agri-assistant-ai/.env`. The AI service stores conversation messages in the `conversations` collection.
 
 The AI service embeds English questions with `text-embedding-3-small` and runs `$vectorSearch` against the `verified_answers` collection. This learning project directly reuses `DEMO_VERIFIED` and `EXPERT_VERIFIED` documents when their crop and location fields are compatible. Use `DEMO_VERIFIED` for your own sample answers; reserve `EXPERT_VERIFIED` for real reviewed content.
 

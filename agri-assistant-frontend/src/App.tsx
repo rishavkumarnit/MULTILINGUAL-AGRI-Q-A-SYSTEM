@@ -32,7 +32,7 @@ export default function App() {
       });
 
       if (!result.ok || !result.body) {
-        let message = `The API returned an unexpected response (HTTP ${result.status}). Ensure the correct Node backend is running on port 4000.`;
+        let message = `The API returned an unexpected response (HTTP ${result.status}). Ensure the AI service is running on port 8000.`;
         try {
           const body = JSON.parse(await result.text()) as { error?: string };
           if (body.error) message = body.error;
