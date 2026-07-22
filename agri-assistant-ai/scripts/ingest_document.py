@@ -6,9 +6,10 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-from openai import AsyncOpenAI
+from langchain_community.document_loaders import TextLoader
+from langchain_openai import OpenAIEmbeddings
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from app.chunking import chunk_text
 from app.database import close_database, connect_database, get_database
 
 
@@ -20,8 +21,9 @@ async def main() -> None:
     parser.add_argument("--location", default=None, help="Optional location metadata")
     arguments = parser.parse_args()
 
-    text = Path(arguments.path).read_text(encoding="utf-8")
-    chunks = chunk_text(text)
+    text = TextLoader(arguments.path, encoding="utf-8").load()[0].page_content
+    splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(encoding_name="cl100k_base", chunk_size=300, chunk_overlap=50)
+    chunks = splitter.split_text(text)
     if not chunks:
         raise RuntimeError("No chunks produced; is the document empty?")
 
@@ -31,8 +33,8 @@ async def main() -> None:
         raise RuntimeError("MONGODB_URI must be configured in .env")
 
     embedding_model = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
-    client = AsyncOpenAI()
-    embedding_response = await client.embeddings.create(model=embedding_model, input=chunks)
+    embeddings = OpenAIEmbeddings(model=embedding_model)
+    embedding_vectors = await embeddings.aembed_documents(chunks)
 
     now = datetime.now(timezone.utc)
     documents = [
@@ -43,7 +45,7 @@ async def main() -> None:
             "location": arguments.location.strip().lower() if arguments.location else None,
             "chunkIndex": index,
             "text": chunk,
-            "embedding": embedding_response.data[index].embedding,
+            "embedding": embedding_vectors[index],
             "embeddingModel": embedding_model,
             "createdAt": now,
         }

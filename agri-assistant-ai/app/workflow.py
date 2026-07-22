@@ -7,6 +7,7 @@ import re
 from typing import TypedDict
 
 from dotenv import load_dotenv
+from langchain_core.prompts import PromptTemplate
 from langgraph.graph import END, START, StateGraph
 from openai import AsyncOpenAI
 
@@ -41,6 +42,12 @@ EXTRACTION_SCHEMA = {
     "required": ["questionEnglish", "crop", "location", "intent"],
 }
 
+EXTRACTION_INPUT_PROMPT = PromptTemplate.from_template("Selected response language: {language}\nQuestion: {question}")
+TRANSLATE_BACK_PROMPT = PromptTemplate.from_template(
+    "Translate the agricultural answer into {language}. "
+    "Preserve all practical details and safety cautions. Return only the translation."
+)
+
 
 class WorkflowState(TypedDict, total=False):
     request: ChatRequest
@@ -72,7 +79,7 @@ async def _translate_extract(state: WorkflowState) -> dict:
             "'price' if it asks about market rate, mandi price, or how much a crop sells for; "
             "'general' for everything else. Return only the requested JSON."
         ),
-        input=f"Selected response language: {LANGUAGE_NAMES.get(request.language, 'English')}\nQuestion: {request.question}",
+        input=EXTRACTION_INPUT_PROMPT.format(language=LANGUAGE_NAMES.get(request.language, "English"), question=request.question),
         text={"format": {"type": "json_schema", "name": "agri_question_context", "strict": True, "schema": EXTRACTION_SCHEMA}},
     )
     result = json.loads(response.output_text)
@@ -191,10 +198,7 @@ async def _translate_back(state: WorkflowState) -> dict:
     client = AsyncOpenAI()
     response = await client.responses.create(
         model=os.getenv("OPENAI_MODEL", "gpt-5-mini"),
-        instructions=(
-            f"Translate the agricultural answer into {LANGUAGE_NAMES.get(request.language, 'English')}. "
-            "Preserve all practical details and safety cautions. Return only the translation."
-        ),
+        instructions=TRANSLATE_BACK_PROMPT.format(language=LANGUAGE_NAMES.get(request.language, "English")),
         input=answer_english,
     )
     return {"answer_english": response.output_text}
