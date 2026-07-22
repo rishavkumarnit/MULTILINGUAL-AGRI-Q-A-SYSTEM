@@ -1,6 +1,10 @@
 import { FormEvent, useState } from "react";
 
-type Message = { role: "user" | "assistant"; content: string; context?: { crop?: string | null; location?: string | null; similarity?: number | null; sources?: string[] | null } };
+type Message = {
+  role: "user" | "assistant";
+  content: string;
+  context?: { crop?: string | null; location?: string | null; similarity?: number | null; sources?: string[] | null; source?: string | null };
+};
 
 const languages = [
   ["en", "English"], ["hi", "हिन्दी"], ["bn", "বাংলা"],
@@ -13,6 +17,7 @@ export default function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
+  const [conversationId, setConversationId] = useState<string | null>(null);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -28,7 +33,7 @@ export default function App() {
       const result = await fetch("/api/chat/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: value, language })
+        body: JSON.stringify({ question: value, language, conversationId })
       });
 
       if (!result.ok || !result.body) {
@@ -59,15 +64,16 @@ export default function App() {
           const line = rawEvent.split("\n").find((entry) => entry.startsWith("data: "));
           if (!line) continue;
           const streamEvent = JSON.parse(line.slice("data: ".length)) as {
-            type: string; text?: string;
-            crop?: string | null; location?: string | null; similarity?: number | null; sources?: string[] | null;
+            type: string; text?: string; conversationId?: string;
+            crop?: string | null; location?: string | null; similarity?: number | null; sources?: string[] | null; source?: string | null;
           };
 
           if (streamEvent.type === "metadata") {
             assistantAdded = true;
+            if (streamEvent.conversationId) setConversationId(streamEvent.conversationId);
             setMessages((current) => [...current, {
               role: "assistant", content: "",
-              context: { crop: streamEvent.crop, location: streamEvent.location, similarity: streamEvent.similarity, sources: streamEvent.sources }
+              context: { crop: streamEvent.crop, location: streamEvent.location, similarity: streamEvent.similarity, sources: streamEvent.sources, source: streamEvent.source }
             }]);
           } else if (streamEvent.type === "delta") {
             setMessages((current) => {
@@ -101,6 +107,11 @@ export default function App() {
       </label>
     </section>
 
+    <p className="disclaimer">
+      This is a personal learning/portfolio project, not a real agricultural advisory service.
+      Verify important decisions with your local agricultural extension office.
+    </p>
+
     <section className="chat" aria-live="polite">
       {messages.length === 0 && <div className="empty-state">
         <span className="seedling">🌱</span>
@@ -110,7 +121,8 @@ export default function App() {
       {messages.map((message, index) => <article key={index} className={`message ${message.role}`}>
         <span>{message.role === "user" ? "You" : "Krishi Sahayak"}</span>
         <p>{message.content}</p>
-        {message.role === "assistant" && (message.context?.crop || message.context?.location || message.context?.similarity || message.context?.sources?.length) && <div className="context">
+        {message.role === "assistant" && (message.context?.crop || message.context?.location || message.context?.similarity || message.context?.sources?.length || message.context?.source === "llm-general") && <div className="context">
+          {message.context.source === "llm-general" && <span className="badge-warning">General AI answer — not verified against our database</span>}
           {message.context.crop && <span>Crop: {message.context.crop}</span>}
           {message.context.location && <span>Location: {message.context.location}</span>}
           {message.context.similarity && <span>Verified match: {Math.round(message.context.similarity * 100)}%</span>}

@@ -1,7 +1,9 @@
 """Tool-calling agent: the model decides which tools to call, if any, instead of a
-hand-coded intent classification. Grounding is enforced in code, not just prompted —
-if no tool call returns usable data, the caller must fall back to a non-generated
-status message rather than trust the model's own text."""
+hand-coded intent classification. When a tool returns usable data the answer is
+grounded in it; when none does, the model may answer from general knowledge instead,
+but source="llm-general" and a disclaimer (enforced in code, not just prompted) mark
+it as unverified. Only a completely empty model response falls back to the old
+non-generated status message."""
 
 import json
 import os
@@ -16,20 +18,28 @@ from .weather import fetch_weather_forecast, format_forecast
 MAX_TOOL_ROUNDS = 4
 ANSWER_TOKEN_CAP = 300  # forces brevity; the model otherwise ignores length instructions
 
+DISCLAIMER_PREFIX = "General AI answer (not verified against our database):"
+
 AGENT_INSTRUCTIONS = (
     "You are an agricultural assistant for Indian farmers. You have tools for weather "
     "forecasts, crop market prices, and searching trusted agricultural documents. Call "
     "whichever tools would help answer the question — none, one, or several. "
-    "Only state facts that came from a tool result. If no tool call returns useful "
-    "information, say plainly that you don't have grounded information to answer, "
-    "rather than guessing from general knowledge. "
+    "Prefer grounding your answer in tool results when they return useful information, "
+    "and briefly name the source document if you used one. "
+    f"If no tool call returns useful information, you may still answer from your own "
+    f"general agricultural knowledge, but the answer MUST start with exactly this line "
+    f"on its own, verbatim: \"{DISCLAIMER_PREFIX}\" — followed by the answer. Never omit "
+    f"this line when you are answering without tool grounding. "
+    "Use the prior conversation turns (if given) only to understand follow-up context "
+    "such as pronouns or an implied crop/location — still only state facts that came "
+    "from a tool result or, when disclaimed as above, your own general knowledge. "
     "Keep the answer very short: at most 5-10 sentences total. If the question needs "
     "step-by-step guidance, use at most one bulleted list of up to 5 items, one short "
     "sentence each, instead of the sentences — never both. Never use headings, numbered "
     "sections, or multiple lists; give the single most useful answer directly instead of "
-    "a full guide covering every angle. Do not restate the question, add disclaimers, "
-    "or ask a follow-up question unless essential information is missing. Return only "
-    "the answer in plain English."
+    "a full guide covering every angle. Do not restate the question, or ask a follow-up "
+    "question unless essential information is missing. Return only the answer in plain "
+    "English."
 )
 
 TOOLS = [
@@ -82,16 +92,22 @@ class AgentResult:
     sources: list[str] | None = None
 
 
-async def run_agent(question_english: str, crop: str | None, location: str | None) -> AgentResult:
+async def run_agent(
+    question_english: str, crop: str | None, location: str | None, history: str = ""
+) -> AgentResult:
     """Let the model decide which tools to call, then synthesize an answer.
 
-    Falls back to source="ungrounded" (never exposed on ChatResponse) if no tool call
-    returned usable data, regardless of what text the model produced.
+    Falls back to source="ungrounded" (never exposed on ChatResponse) only if the
+    model produced no text at all, even without tool grounding — see source="llm-general"
+    for the normal ungrounded-but-answered case.
     """
     client = AsyncOpenAI()
     model = os.getenv("OPENAI_MODEL", "gpt-5-mini")
 
-    context_lines = [f"Question: {question_english}"]
+    context_lines = []
+    if history:
+        context_lines.append(f"Conversation so far (for context only, do not re-answer it):\n{history}")
+    context_lines.append(f"Question: {question_english}")
     if crop:
         context_lines.append(f"Crop mentioned: {crop}")
     if location:
@@ -135,7 +151,15 @@ async def run_agent(question_english: str, crop: str | None, location: str | Non
             source="rag-generated",
             sources=sorted({chunk.title for chunk in chunks_found}),
         )
+    if answer_text:
+        return AgentResult(answer_english=_ensure_disclaimer(answer_text), source="llm-general")
     return AgentResult(answer_english="", source="ungrounded")
+
+
+def _ensure_disclaimer(text: str) -> str:
+    """Code-level guarantee that the disclaimer is present, since prompted instructions
+    alone aren't reliably followed by the model (as already found for answer length)."""
+    return text if text.startswith(DISCLAIMER_PREFIX) else f"{DISCLAIMER_PREFIX} {text}"
 
 
 def _trim_if_cut_off(text: str, status: str | None) -> str:

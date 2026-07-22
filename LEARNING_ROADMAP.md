@@ -9,7 +9,7 @@ This project is intentionally a single, portfolio-ready system that demonstrates
 | Embeddings | English question vectors | Implemented |
 | Vector database / semantic search | MongoDB Atlas `$vectorSearch` over verified Q&A | Implemented |
 | Context-aware retrieval | Crop and location filters on vector search | Implemented |
-| Conversation persistence | FastAPI + MongoDB `conversations` collection | Implemented |
+| Conversation memory | Persisted history fed back as LLM context, capped at 50 messages/conversation | Implemented |
 | RAG | Trusted agricultural document ingestion and chunk retrieval | Implemented |
 | LangChain | Document loaders, chunking, retrievers, prompt templates | Implemented |
 | LangGraph | Explicit state graph for the assistant workflow | Implemented |
@@ -206,3 +206,35 @@ RAG question's answer visibly grew character-by-character; an English ungrounded
 question (which is also a status message, so double-covers both fast-path rules)
 appeared instantly with no typing effect; Mongo persistence confirmed correct for both
 the user and assistant messages after a streamed exchange.
+
+## Conversation memory + relaxed grounding (2026-07-23)
+
+Two related gaps closed at once:
+
+1. **The frontend never sent `conversationId` back to the server** — every message
+   generated a brand-new conversation server-side regardless of what was persisted, so
+   even though messages were stored, nothing was ever fed back as context. Fixed in
+   `App.tsx`: the `conversationId` from the first response's metadata event is now kept
+   in state and sent on every subsequent request in the same session.
+2. **Persisted history was never read back into the LLM's context.** Fixed:
+   `app/conversations.py` gained `get_conversation_messages()`; `app/workflow.py`'s
+   `_format_history()` turns the last `CONTEXT_TURN_LIMIT` (6) persisted assistant
+   messages into `Farmer:`/`Assistant:` pairs (each assistant message already carries
+   both `questionEnglish` and the new `answerEnglish` field, so no separate
+   user/assistant pairing logic is needed) and feeds it to both the
+   translate/extract step and the agent. Storage itself is capped at
+   `MAX_CONVERSATION_MESSAGES` (50) in `app/main.py`; requests past that limit get a 400
+   asking the user to start a new conversation. The context fed to the LLM (6 turns) is
+   deliberately much smaller than the storage cap (50 messages), since re-sending full
+   history every turn would multiply token cost with conversation length.
+
+**Grounding policy relaxed, on purpose:** `app/agent.py` previously refused to answer at
+all when no tool call returned data (`agents_tool_calling.md`'s "code-enforced
+grounding"). Per explicit request, it now lets the model answer from general knowledge
+in that case, but the answer is forced — in code, not just prompted, since the model
+doesn't reliably follow either instruction on its own — to start with a disclaimer
+("General AI answer (not verified against our database):") and is tagged
+`source: "llm-general"`. The frontend renders that as a distinct warning badge, and
+carries a permanent "this is a learning project, not a real advisory service" banner.
+The old hard-refusal path (`source: "ungrounded"` → canned status message) still exists
+as a last-resort fallback for the rare case where the model returns literally no text.

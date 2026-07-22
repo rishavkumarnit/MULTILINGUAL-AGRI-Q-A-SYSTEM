@@ -37,6 +37,25 @@ The frontend runs at `http://localhost:5173` and proxies `/api` to FastAPI at
 
 `React → POST /api/chat (or /api/chat/stream) → FastAPI → React`
 
+## Conversations and grounding
+
+Each browser session keeps one `conversationId` (generated on the first message, then
+reused for every message after) and sends it on every request. The AI service loads the
+conversation's persisted messages and feeds the last `CONTEXT_TURN_LIMIT` (6) turns back
+to both the translation/extraction step and the answer-generating agent, so follow-ups
+like "and for rice?" resolve pronouns and carried-over crop/location against the actual
+prior exchange, not just the current message in isolation (`app/workflow.py`'s
+`_format_history`). A conversation is capped at `MAX_CONVERSATION_MESSAGES` (50) stored
+messages — once reached, further messages on that `conversationId` are rejected with a
+400 asking the user to start a new conversation (`app/conversations.py`).
+
+When no tool call and no verified/RAG match grounds an answer, the agent may still
+answer from its own general knowledge rather than refusing outright — but the answer is
+forced (in code, not just prompted) to start with the disclaimer "General AI answer (not
+verified against our database):" and is tagged `source: "llm-general"`, which the
+frontend renders as a distinct warning badge. This is a portfolio/learning project, not
+a real advisory service — the UI carries a permanent disclaimer banner saying so.
+
 ## MongoDB Atlas and semantic reuse
 
 Set `MONGODB_URI` and `MONGODB_DATABASE` in `agri-assistant-ai/.env`. The AI service stores conversation messages in the `conversations` collection.

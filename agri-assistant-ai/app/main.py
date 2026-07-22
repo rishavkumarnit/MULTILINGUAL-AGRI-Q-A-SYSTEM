@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from .conversations import persist_message
+from .conversations import MAX_CONVERSATION_MESSAGES, get_conversation_messages, persist_message
 from .database import close_database, connect_database, database_is_connected
 from .models import ChatRequest, ChatResponse
 from .workflow import LANGUAGE_NAMES, process_question, stream_question
@@ -41,6 +41,19 @@ def _normalize(request: ChatRequest) -> tuple[str, str, str] | JSONResponse:
     return question, language, conversation_id
 
 
+async def _load_conversation(conversation_id: str) -> tuple[list[dict], JSONResponse | None]:
+    """Returns (history_messages, None), or ([], error_response) once the conversation
+    has hit MAX_CONVERSATION_MESSAGES. A brand-new conversation_id simply has no
+    messages yet, so this is a no-op for the first turn."""
+    messages = await get_conversation_messages(conversation_id)
+    if len(messages) >= MAX_CONVERSATION_MESSAGES:
+        return [], JSONResponse(
+            {"error": f"This conversation has reached its {MAX_CONVERSATION_MESSAGES}-message limit. Please start a new conversation."},
+            status_code=400,
+        )
+    return messages, None
+
+
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     normalized = _normalize(request)
@@ -48,14 +61,21 @@ async def chat(request: ChatRequest):
         return normalized
     question, language, conversation_id = normalized
 
+    history, limit_error = await _load_conversation(conversation_id)
+    if limit_error:
+        return limit_error
+
     await persist_message(conversation_id, {
         "role": "user", "content": question, "language": language, "createdAt": datetime.now(timezone.utc),
     })
-    result = await process_question(ChatRequest(question=question, language=language, conversationId=conversation_id))
+    result = await process_question(
+        ChatRequest(question=question, language=language, conversationId=conversation_id), history=history
+    )
     await persist_message(conversation_id, {
         "role": "assistant",
         "content": result.answer,
         "questionEnglish": result.question_english,
+        "answerEnglish": result.answer_english,
         "crop": result.crop,
         "location": result.location,
         "source": result.source,
@@ -73,6 +93,10 @@ async def chat_stream(request: ChatRequest) -> StreamingResponse:
         return normalized
     question, language, conversation_id = normalized
 
+    history, limit_error = await _load_conversation(conversation_id)
+    if limit_error:
+        return limit_error
+
     await persist_message(conversation_id, {
         "role": "user", "content": question, "language": language, "createdAt": datetime.now(timezone.utc),
     })
@@ -81,7 +105,7 @@ async def chat_stream(request: ChatRequest) -> StreamingResponse:
         answer_text = ""
         metadata: dict = {}
         normalized_request = ChatRequest(question=question, language=language, conversationId=conversation_id)
-        async for event in stream_question(normalized_request):
+        async for event in stream_question(normalized_request, history=history):
             if event["type"] == "metadata":
                 metadata = event
                 yield f"data: {json.dumps({**event, 'conversationId': conversation_id})}\n\n"
@@ -94,6 +118,7 @@ async def chat_stream(request: ChatRequest) -> StreamingResponse:
             "role": "assistant",
             "content": answer_text,
             "questionEnglish": metadata.get("questionEnglish"),
+            "answerEnglish": metadata.get("answerEnglish"),
             "crop": metadata.get("crop"),
             "location": metadata.get("location"),
             "source": metadata.get("source"),

@@ -15,6 +15,8 @@ select { border: 1px solid #9ec67b; border-radius: 8px; padding: 9px; background
 .message { max-width: 82%; border-radius: 15px; padding: 13px 16px; }.message span { display: block; font-size: .75rem; font-weight: 750; margin-bottom: 4px; }.message p { white-space: pre-wrap; margin: 0; line-height: 1.5; }
 .user { justify-self: end; background: #dcecc9; }.assistant { background: white; border: 1px solid #dfded4; }
 .context { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }.context span { display: inline-block; margin: 0; padding: 3px 7px; border-radius: 99px; background: #edf5e5; color: #31563c; font-size: .72rem; }
+.badge-warning { background: #fbe6c4 !important; color: #7a4a05 !important; font-weight: 700; }
+.disclaimer { margin: -8px 0 0; padding: 10px 16px; background: #fbf3d9; border: 1px solid #e8d9a0; border-radius: 12px; color: #6b5a1e; font-size: .78rem; text-align: center; }
 .composer { background: white; padding: 16px; border: 1px solid #dfded4; border-radius: 16px; }.composer > label { display: block; font-weight: 700; margin-bottom: 8px; }
 .input-row { display: flex; gap: 10px; align-items: end; } textarea { flex: 1; resize: vertical; padding: 10px; border: 1px solid #b8c7b9; border-radius: 9px; color: #173524; }
 button { border: 0; border-radius: 9px; padding: 12px 20px; background: #176b3a; color: white; font-weight: 750; cursor: pointer; } button:disabled { opacity: .5; cursor: not-allowed; }.error { margin: 9px 0 0; color: #a42c22; }
