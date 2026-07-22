@@ -15,7 +15,7 @@ This project is intentionally a single, portfolio-ready system that demonstrates
 | LangGraph | Explicit state graph for the assistant workflow | Implemented |
 | Tool calling | Weather and mandi price tools for time-sensitive questions | Implemented |
 | MCP | Dedicated MCP server exposing agriculture and weather tools | Implemented |
-| Agents | Tool-selection policy layered above the LangGraph workflow | Planned |
+| Agents | Tool-selection policy layered above the LangGraph workflow | Implemented |
 | Streaming | Token streaming from AI service through Node to React | Planned |
 | Evaluations and observability | Test dataset, retrieval metrics, traces, and feedback | Planned |
 
@@ -78,34 +78,70 @@ session-init errors) as of 2026-07. Running standalone via `mcp.run(transport="s
 is the reliable path, and is also exactly how Claude Desktop/Claude Code spawn local
 MCP servers — no port to configure.
 
-**Deliberately not wired into the LangGraph workflow as a tool-calling client**, either.
-`workflow.py`'s `fetch_weather`/`fetch_price` nodes still call the plain Python
-functions directly, unchanged. Routing tool selection through the MCP protocol
-internally is closer to the separate, still-`Planned` "Agents" row below — adding a
-protocol hop and new failure modes to an already-tuned path wasn't worth it just to
-reuse the same two tools a different way.
+**Deliberately not wired into the LangGraph workflow as a tool-calling client**, even
+after the "Agents" row below shipped. `app/agent.py` calls `weather.py`/`crop_price.py`'s
+plain Python functions directly, the same way `mcp_server.py` does — the two
+entrypoints share the underlying functions, not a protocol connection between them.
+Routing the *internal* agent through its own MCP server would add a protocol hop and
+new failure modes for no benefit; MCP's job here is external exposure only.
+
+## Agents
+
+Tool selection is no longer a hand-coded classification step. `app/agent.py`'s
+`run_agent(question_english, crop, location)` gives the model three tools via OpenAI's
+native Responses API function-calling and lets it decide which to call — none, one, or
+several — instead of us extracting an `intent` field and branching on it:
+
+- `get_weather_forecast(location)` → `weather.fetch_weather_forecast` + `format_forecast`
+- `get_crop_price(crop, location)` → `crop_price.fetch_crop_price` + `format_price`
+- `search_documents(query)` → `rag.find_relevant_chunks` (same threshold-filtered
+  retrieval RAG already used)
+
+The loop: call the model with `tools=[...]` → for each `function_call` item in
+`response.output`, execute the real Python function → continue with
+`client.responses.create(..., previous_response_id=response.id, input=[{"type":
+"function_call_output", ...}], tools=[...])` → repeat (capped at 4 rounds) until the
+model stops calling tools. `previous_response_id` handles conversation/reasoning
+continuity server-side, so prior turns don't need to be replayed manually.
+
+**Grounding is enforced in code, not just prompted.** The agent's system instructions
+say to only state facts backed by a tool result, but that alone isn't a guarantee — so
+`run_agent` tracks which tools actually returned real data (a forecast, a price, or any
+document chunks) and derives `source` from that (`"weather-forecast"` /
+`"price-lookup"` / `"rag-generated"`, reusing the exact same `ChatResponse` literal
+values as before — no schema change). If no tool produced anything usable, the model's
+own text is discarded entirely and `workflow.py`'s `_agent` node falls back to the exact
+same plain status message the old `status_message` node used
+(`source: "translation-extraction"`) — the app never presents ungrounded, hallucinated
+agricultural advice as if it were sourced.
+
+Verified-answer reuse (`semantic_search.py`) stays a **deterministic pre-check before
+the agent runs**, not a tool — expert-reviewed content should be authoritative when it
+matches crop+location, not left to model discretion.
+
+This simplified `workflow.py`'s graph from 4 conditional branches (weather/price/RAG/
+status, each hand-routed from a classified `intent`) down to 2 (verified-answer match,
+then the agent) while being strictly more capable — the agent can combine tools within
+a single answer (e.g. weather + irrigation advice) instead of being locked into exactly
+one branch per question. One accepted limitation: `ChatResponse.source` is still a
+single value, so if multiple tools contribute to one answer, only one "wins" for
+attribution (weather > price > rag priority) — a pre-existing schema constraint, not
+something this change needed to fix.
 
 ## Tool calling
 
-Both tools are implemented as graph nodes/branches on top of the LangGraph workflow.
-The extraction step classifies `intent: "weather" | "price" | "general"` in the same
-structured-output call that already extracts crop/location, so routing costs no extra
-LLM round trip.
+The weather and mandi price lookups themselves (used by both the agent above and the
+standalone MCP server) are plain async functions with no LLM involved in the lookup
+itself:
 
-1. **Weather forecast tool** — `agri-assistant-ai/app/weather.py` geocodes the
-   extracted location and fetches a 5-day forecast from Open-Meteo (no API key needed).
-   When `intent` is `weather` and a location was given, the graph routes to a
-   `fetch_weather` node before falling back to the normal semantic-search/RAG pipeline
-   if the location can't be resolved or the API call fails. Response
-   `source: "weather-forecast"`.
-2. **Mandi price tool** — `agri-assistant-ai/app/crop_price.py` looks up the latest
-   modal price for a crop via the data.gov.in Agmarknet API (resource
-   `9ef84268-d588-465a-a308-a864a43d0070`), trying the extracted location as a district,
-   then a state, then falling back to a nationwide lookup. When `intent` is `price` and
-   a crop was given, the graph routes to a `fetch_price` node, falling back to the
-   normal pipeline if no price data is found. Response `source: "price-lookup"`.
-   Requires `DATA_GOV_IN_API_KEY` in `agri-assistant-ai/.env` (already set locally,
-   gitignored; placeholder in `.env.example`).
+1. **Weather forecast** — `agri-assistant-ai/app/weather.py` geocodes a location and
+   fetches a 5-day forecast from Open-Meteo (no API key needed).
+2. **Mandi price** — `agri-assistant-ai/app/crop_price.py` looks up the latest modal
+   price for a crop via the data.gov.in Agmarknet API (resource
+   `9ef84268-d588-465a-a308-a864a43d0070`), trying the location as a district, then a
+   state, then falling back to a nationwide lookup. Requires `DATA_GOV_IN_API_KEY` in
+   `agri-assistant-ai/.env` (already set locally, gitignored; placeholder in
+   `.env.example`).
    **Implementation note:** this API's server hangs indefinitely on Python's
    OpenSSL-based TLS handshake (reproduced with both `httpx` and stdlib `urllib`) while
    `curl.exe`'s Schannel TLS stack connects in under a second, so `crop_price.py` shells
