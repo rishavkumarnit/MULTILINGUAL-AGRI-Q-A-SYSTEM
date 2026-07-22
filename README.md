@@ -84,4 +84,27 @@ python -m scripts.ingest_document --path data/documents/monsoon_crop_planning.md
 python -m scripts.ingest_document --path data/documents/fertilizer_application_basics.md --title "Fertilizer Application Basics"
 ```
 
-The script chunks the document with a token-accurate splitter (`app/chunking.py`), embeds each chunk with `EMBEDDING_MODEL`, and upserts into `document_chunks`. Re-running the same `--title` replaces its existing chunks, so it's safe to re-ingest after editing a document. Retrieval is unfiltered by crop/location — general documents are matched by semantic similarity alone — and answers that draw on retrieved chunks are returned with `source: "rag-generated"` and a `sources` list naming the document titles used.
+The script loads the document with a LangChain `TextLoader`, chunks it with `RecursiveCharacterTextSplitter.from_tiktoken_encoder(...)`, embeds each chunk with `EMBEDDING_MODEL` via `langchain_openai.OpenAIEmbeddings`, and upserts into `document_chunks`. Re-running the same `--title` replaces its existing chunks, so it's safe to re-ingest after editing a document. Retrieval goes through `app/retrievers.py`'s `AtlasVectorRetriever` (a custom LangChain `BaseRetriever`), unfiltered by crop/location — general documents are matched by semantic similarity alone — and answers that draw on retrieved chunks are returned with `source: "rag-generated"` and a `sources` list naming the document titles used.
+
+## MCP server
+
+`agri-assistant-ai/mcp_server.py` is a standalone [MCP](https://modelcontextprotocol.io) server that exposes the weather and mandi price tools (`agri-assistant-ai/app/weather.py`, `agri-assistant-ai/app/crop_price.py`) to any MCP client — it does not sit on the FastAPI request path; the AI service calls those same functions directly. Run it from `agri-assistant-ai` with the venv active:
+
+```powershell
+python mcp_server.py
+```
+
+It communicates over stdio, so most MCP clients spawn it as a subprocess rather than connecting to a port. Example Claude Desktop / Claude Code config entry:
+
+```json
+{
+  "mcpServers": {
+    "agri-assistant-tools": {
+      "command": "C:\\path\\to\\agri-assistant-ai\\.venv\\Scripts\\python.exe",
+      "args": ["C:\\path\\to\\agri-assistant-ai\\mcp_server.py"]
+    }
+  }
+}
+```
+
+It exposes two tools: `get_weather_forecast(location)` and `get_crop_price(crop, location)` (the latter needs `DATA_GOV_IN_API_KEY` set in `agri-assistant-ai/.env`).

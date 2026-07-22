@@ -11,11 +11,11 @@ from langchain_core.prompts import PromptTemplate
 from langgraph.graph import END, START, StateGraph
 from openai import AsyncOpenAI
 
-from .crop_price import CropPrice, fetch_crop_price
+from .crop_price import CropPrice, fetch_crop_price, format_price
 from .models import ChatRequest, ChatResponse
 from .rag import RetrievedChunk, find_relevant_chunks, generate_rag_answer
 from .semantic_search import SemanticMatch, find_verified_match
-from .weather import WeatherForecast, fetch_weather_forecast
+from .weather import WeatherForecast, fetch_weather_forecast, format_forecast
 
 LANGUAGE_NAMES = {"en": "English", "hi": "Hindi", "bn": "Bengali", "ta": "Tamil", "te": "Telugu", "mr": "Marathi"}
 KNOWN_CROPS = ("wheat", "rice", "paddy", "mustard", "maize", "corn", "cotton", "potato", "tomato", "sugarcane", "soybean", "chickpea")
@@ -105,7 +105,7 @@ async def _fetch_weather(state: WorkflowState) -> dict:
         return {"forecast": None}
     return {
         "forecast": forecast,
-        "answer_english": _weather_answer_text(forecast),
+        "answer_english": format_forecast(forecast),
         "source": "weather-forecast",
     }
 
@@ -114,37 +114,19 @@ def _route_after_weather(state: WorkflowState) -> str:
     return "translate_back" if state.get("forecast") else "semantic_search"
 
 
-def _weather_answer_text(forecast: WeatherForecast) -> str:
-    lines = [f"5-day forecast for {forecast.location_label}:"]
-    for day in forecast.days:
-        lines.append(
-            f"- {day.date}: {day.description}, {day.temp_min:.0f}-{day.temp_max:.0f}°C, "
-            f"{day.precipitation_probability}% chance of rain ({day.precipitation_mm:.1f} mm)"
-        )
-    return "\n".join(lines)
-
-
 async def _fetch_price(state: WorkflowState) -> dict:
     price = await fetch_crop_price(state["crop"], state.get("location"))
     if not price:
         return {"price": None}
     return {
         "price": price,
-        "answer_english": _price_answer_text(price),
+        "answer_english": format_price(price),
         "source": "price-lookup",
     }
 
 
 def _route_after_price(state: WorkflowState) -> str:
     return "translate_back" if state.get("price") else "semantic_search"
-
-
-def _price_answer_text(price: CropPrice) -> str:
-    return (
-        f"The latest modal price for {price.commodity} at {price.market}, {price.state} "
-        f"(as of {price.arrival_date}) is Rs {price.modal_price:.0f} per quintal "
-        f"(range Rs {price.min_price:.0f}-{price.max_price:.0f})."
-    )
 
 
 async def _semantic_search(state: WorkflowState) -> dict:

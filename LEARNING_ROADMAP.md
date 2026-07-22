@@ -14,7 +14,7 @@ This project is intentionally a single, portfolio-ready system that demonstrates
 | LangChain | Document loaders, chunking, retrievers, prompt templates | Implemented |
 | LangGraph | Explicit state graph for the assistant workflow | Implemented |
 | Tool calling | Weather and mandi price tools for time-sensitive questions | Implemented |
-| MCP | Dedicated MCP server exposing agriculture and weather tools | Planned |
+| MCP | Dedicated MCP server exposing agriculture and weather tools | Implemented |
 | Agents | Tool-selection policy layered above the LangGraph workflow | Planned |
 | Streaming | Token streaming from AI service through Node to React | Planned |
 | Evaluations and observability | Test dataset, retrieval metrics, traces, and feedback | Planned |
@@ -61,6 +61,29 @@ or behavior — this was a portfolio/interview-value swap of internals, not a fe
 previously pinned `openai==1.99.9` (both are pre-2.0 releases; the `openai` 2.x line
 requires `langchain-openai>=1.2`, which was avoided specifically to not risk the tuned
 `responses.create`/structured-output call sites on a major SDK version).
+
+## MCP
+
+`agri-assistant-ai/mcp_server.py` is a standalone MCP server (official `mcp` SDK,
+pinned `mcp<2` for the stable v1 line — a `2.0` line is still alpha and renames
+`FastMCP`→`MCPServer`) that exposes exactly the two tools named in this roadmap row:
+`get_weather_forecast(location)` and `get_crop_price(crop, location)`. It reuses
+`app/weather.py`/`app/crop_price.py` directly — no logic duplicated — via
+`format_forecast`/`format_price` helper functions that were extracted out of
+`workflow.py`'s private formatting code so both entrypoints share them.
+
+**Deliberately a separate process, not mounted into the FastAPI app.** The MCP Python
+SDK's ASGI-mount path had real, currently-open upstream bugs (redirect loops,
+session-init errors) as of 2026-07. Running standalone via `mcp.run(transport="stdio")`
+is the reliable path, and is also exactly how Claude Desktop/Claude Code spawn local
+MCP servers — no port to configure.
+
+**Deliberately not wired into the LangGraph workflow as a tool-calling client**, either.
+`workflow.py`'s `fetch_weather`/`fetch_price` nodes still call the plain Python
+functions directly, unchanged. Routing tool selection through the MCP protocol
+internally is closer to the separate, still-`Planned` "Agents" row below — adding a
+protocol hop and new failure modes to an already-tuned path wasn't worth it just to
+reuse the same two tools a different way.
 
 ## Tool calling
 

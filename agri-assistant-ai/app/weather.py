@@ -90,3 +90,13 @@ async def _forecast(client: httpx.AsyncClient, place: dict) -> WeatherForecast |
         for i in range(len(daily["time"]))
     ]
     return WeatherForecast(location_label=label, days=days)
+
+
+def format_forecast(forecast: WeatherForecast) -> str:
+    lines = [f"5-day forecast for {forecast.location_label}:"]
+    for day in forecast.days:
+        lines.append(
+            f"- {day.date}: {day.description}, {day.temp_min:.0f}-{day.temp_max:.0f}°C, "
+            f"{day.precipitation_probability}% chance of rain ({day.precipitation_mm:.1f} mm)"
+        )
+    return "\n".join(lines)

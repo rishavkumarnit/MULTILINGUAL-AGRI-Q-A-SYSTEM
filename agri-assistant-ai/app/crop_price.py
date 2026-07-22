@@ -96,3 +96,11 @@ def _pick_latest(records: list[dict], commodity: str) -> CropPrice | None:
         )
     except (KeyError, ValueError):
         return None
+
+
+def format_price(price: CropPrice) -> str:
+    return (
+        f"The latest modal price for {price.commodity} at {price.market}, {price.state} "
+        f"(as of {price.arrival_date}) is Rs {price.modal_price:.0f} per quintal "
+        f"(range Rs {price.min_price:.0f}-{price.max_price:.0f})."
+    )
