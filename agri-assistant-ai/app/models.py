@@ -17,7 +17,7 @@ class ChatResponse(BaseModel):
     crop: str | None = None
     location: str | None = None
     similarity: float | None = None
-    source: Literal["translation-extraction", "development-fallback", "semantic-reuse", "rag-generated"]
+    source: Literal["translation-extraction", "development-fallback", "semantic-reuse", "rag-generated", "weather-forecast"]
     sources: list[str] | None = None
 
     model_config = {"populate_by_name": True}

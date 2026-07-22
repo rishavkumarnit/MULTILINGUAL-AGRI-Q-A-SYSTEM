@@ -13,6 +13,7 @@ from openai import AsyncOpenAI
 from .models import ChatRequest, ChatResponse
 from .rag import RetrievedChunk, find_relevant_chunks, generate_rag_answer
 from .semantic_search import SemanticMatch, find_verified_match
+from .weather import WeatherForecast, fetch_weather_forecast
 
 LANGUAGE_NAMES = {"en": "English", "hi": "Hindi", "bn": "Bengali", "ta": "Tamil", "te": "Telugu", "mr": "Marathi"}
 KNOWN_CROPS = ("wheat", "rice", "paddy", "mustard", "maize", "corn", "cotton", "potato", "tomato", "sugarcane", "soybean", "chickpea")
@@ -26,8 +27,13 @@ EXTRACTION_SCHEMA = {
         "questionEnglish": {"type": "string", "description": "Faithful English translation of the farmer's question."},
         "crop": {"type": ["string", "null"], "description": "Crop explicitly mentioned, or null."},
         "location": {"type": ["string", "null"], "description": "District, village, state, or location explicitly mentioned, or null."},
+        "intent": {
+            "type": "string",
+            "enum": ["weather", "general"],
+            "description": "weather if the farmer is asking about weather, rain, or forecast; general otherwise.",
+        },
     },
-    "required": ["questionEnglish", "crop", "location"],
+    "required": ["questionEnglish", "crop", "location", "intent"],
 }
 
 
@@ -36,6 +42,8 @@ class WorkflowState(TypedDict, total=False):
     question_english: str
     crop: str | None
     location: str | None
+    intent: str
+    forecast: WeatherForecast | None
     verified_match: SemanticMatch | None
     chunks: list[RetrievedChunk]
     answer_english: str
@@ -63,7 +71,37 @@ async def _translate_extract(state: WorkflowState) -> dict:
         "question_english": result["questionEnglish"],
         "crop": result.get("crop"),
         "location": result.get("location"),
+        "intent": result["intent"],
     }
+
+
+def _route_after_extraction(state: WorkflowState) -> str:
+    return "fetch_weather" if state["intent"] == "weather" and state.get("location") else "semantic_search"
+
+
+async def _fetch_weather(state: WorkflowState) -> dict:
+    forecast = await fetch_weather_forecast(state["location"])
+    if not forecast:
+        return {"forecast": None}
+    return {
+        "forecast": forecast,
+        "answer_english": _weather_answer_text(forecast),
+        "source": "weather-forecast",
+    }
+
+
+def _route_after_weather(state: WorkflowState) -> str:
+    return "translate_back" if state.get("forecast") else "semantic_search"
+
+
+def _weather_answer_text(forecast: WeatherForecast) -> str:
+    lines = [f"5-day forecast for {forecast.location_label}:"]
+    for day in forecast.days:
+        lines.append(
+            f"- {day.date}: {day.description}, {day.temp_min:.0f}-{day.temp_max:.0f}°C, "
+            f"{day.precipitation_probability}% chance of rain ({day.precipitation_mm:.1f} mm)"
+        )
+    return "\n".join(lines)
 
 
 async def _semantic_search(state: WorkflowState) -> dict:
@@ -129,6 +167,7 @@ async def _translate_back(state: WorkflowState) -> dict:
 def _build_graph():
     builder = StateGraph(WorkflowState)
     builder.add_node("translate_extract", _translate_extract)
+    builder.add_node("fetch_weather", _fetch_weather)
     builder.add_node("semantic_search", _semantic_search)
     builder.add_node("rag_retrieve", _rag_retrieve)
     builder.add_node("generate_rag_answer", _generate_rag_answer)
@@ -136,7 +175,8 @@ def _build_graph():
     builder.add_node("translate_back", _translate_back)
 
     builder.add_edge(START, "translate_extract")
-    builder.add_edge("translate_extract", "semantic_search")
+    builder.add_conditional_edges("translate_extract", _route_after_extraction, ["fetch_weather", "semantic_search"])
+    builder.add_conditional_edges("fetch_weather", _route_after_weather, ["translate_back", "semantic_search"])
     builder.add_conditional_edges("semantic_search", _route_after_semantic_search, ["translate_back", "rag_retrieve"])
     builder.add_conditional_edges("rag_retrieve", _route_after_rag_retrieve, ["generate_rag_answer", "status_message"])
     builder.add_edge("generate_rag_answer", "translate_back")
