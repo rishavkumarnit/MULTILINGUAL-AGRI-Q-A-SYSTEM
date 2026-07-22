@@ -8,9 +8,9 @@ Two independently runnable services form the assistant:
 There used to be a third, Node/Express service (`agri-assistant-backend`) sitting between
 the frontend and the AI service as a public gateway. It was removed — CORS, request
 validation, and conversation persistence all moved into FastAPI (`app/main.py`,
-`app/conversations.py`) — so the frontend now talks to the AI service directly. CORS is
-wide open (`allow_origins=["*"]`) for this learning project; restrict it before any real
-deployment.
+`app/conversations.py`) — so the frontend now talks to the AI service directly. CORS
+defaults to wide open (`ALLOWED_ORIGINS` unset → `*`); the "Deploy" section below covers
+locking it to the real frontend domain.
 
 ## Run locally
 
@@ -32,6 +32,51 @@ pnpm run dev
 
 The frontend runs at `http://localhost:5173` and proxies `/api` to FastAPI at
 `http://localhost:8000` (see `vite.config.ts`).
+
+## Deploy (Render + Vercel)
+
+Push everything first — both platforms deploy from the GitHub repo (`origin/master`),
+including the new `render.yaml` at the repo root and `agri-assistant-frontend/.env.example`.
+
+### 1. Backend on Render
+
+1. [render.com](https://render.com) → sign in with GitHub → **New +** → **Blueprint**.
+2. Select this repo. Render reads `render.yaml` automatically and proposes one web
+   service (`agri-assistant-ai`, free plan, `rootDir: agri-assistant-ai`).
+3. Before the first deploy completes, fill in the secret environment variables it lists
+   (declared with `sync: false` in `render.yaml`, so Render prompts for values rather
+   than reading them from git): `OPENAI_API_KEY`, `MONGODB_URI`, `MONGODB_DATABASE`,
+   `DATA_GOV_IN_API_KEY`, plus the optional overrides in
+   `agri-assistant-ai/.env.example` if you want non-default values. Copy the values from
+   your local `agri-assistant-ai/.env` — leave `ALLOWED_ORIGINS` blank for now.
+4. **MongoDB Atlas → Network Access**: add `0.0.0.0/0` ("allow access from anywhere").
+   Render's free tier has no static outbound IP, so a specific-IP allowlist won't work.
+5. Deploy, then note the resulting URL (e.g. `https://agri-assistant-ai.onrender.com`).
+   Free-tier services spin down after ~15 minutes idle — the first request after that can
+   take 30-60s while it wakes back up; that's expected, not a bug.
+
+### 2. Frontend on Vercel
+
+1. [vercel.com](https://vercel.com) → sign in with GitHub → **Add New** → **Project** →
+   import this repo.
+2. Set **Root Directory** to `agri-assistant-frontend` (this is a monorepo). Vercel
+   auto-detects the Vite preset; build command `pnpm run build` / output `dist` need no
+   changes.
+3. Add environment variable `VITE_API_BASE_URL` = the Render URL from step 1 (no
+   trailing slash).
+4. Deploy, then note the resulting URL (e.g. `https://your-app.vercel.app`).
+
+### 3. Lock down CORS
+
+The backend's `ALLOWED_ORIGINS` env var was left blank in step 1, so it's currently wide
+open (`*`) — fine to get both deploys working end-to-end first, but tighten it now:
+
+1. Render dashboard → `agri-assistant-ai` → **Environment** → set `ALLOWED_ORIGINS` to
+   the exact Vercel URL from step 2.
+2. Saving triggers an automatic redeploy.
+
+From here, both platforms auto-deploy on every push to `master` — no further manual
+steps for future changes.
 
 ## Request flow
 

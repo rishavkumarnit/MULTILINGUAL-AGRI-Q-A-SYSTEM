@@ -11,6 +11,12 @@ const languages = [
   ["ta", "தமிழ்"], ["te", "తెలుగు"], ["mr", "मराठी"]
 ] as const;
 
+// In local dev this is unset, so requests go to the relative "/api/..." path that
+// Vite's dev server proxies to localhost:8000 (vite.config.ts). In production there is
+// no such proxy, so the deployed build needs VITE_API_BASE_URL set to the backend's
+// public URL (e.g. https://agri-assistant-ai.onrender.com).
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
+
 export default function App() {
   const [language, setLanguage] = useState("en");
   const [question, setQuestion] = useState("");
@@ -30,14 +36,14 @@ export default function App() {
     setIsLoading(true);
 
     try {
-      const result = await fetch("/api/chat/stream", {
+      const result = await fetch(`${API_BASE}/api/chat/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ question: value, language, conversationId })
       });
 
       if (!result.ok || !result.body) {
-        let message = `The API returned an unexpected response (HTTP ${result.status}). Ensure the AI service is running on port 8000.`;
+        let message = `The API returned an unexpected response (HTTP ${result.status}). Ensure the AI service is running${API_BASE ? ` at ${API_BASE}` : " on port 8000"}.`;
         try {
           const body = JSON.parse(await result.text()) as { error?: string };
           if (body.error) message = body.error;

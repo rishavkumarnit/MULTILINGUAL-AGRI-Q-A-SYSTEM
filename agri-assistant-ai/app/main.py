@@ -1,4 +1,5 @@
 import json
+import os
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -19,8 +20,14 @@ async def lifespan(_app: FastAPI):
     await close_database()
 
 
+# Comma-separated list of allowed origins, e.g. "https://myapp.vercel.app". Defaults to
+# "*" so local dev (and initial deploys, before the frontend's final URL is known) keep
+# working unchanged; set this explicitly once the production frontend domain is known.
+_allowed_origins = os.getenv("ALLOWED_ORIGINS", "*")
+ALLOWED_ORIGINS = ["*"] if _allowed_origins == "*" else [origin.strip() for origin in _allowed_origins.split(",")]
+
 app = FastAPI(title="Agri Assistant AI Service", version="0.1.0", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS, allow_methods=["*"], allow_headers=["*"])
 
 
 @app.get("/health")
