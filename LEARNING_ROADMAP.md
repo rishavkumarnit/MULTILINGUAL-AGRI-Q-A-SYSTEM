@@ -16,7 +16,7 @@ This project is intentionally a single, portfolio-ready system that demonstrates
 | Tool calling | Weather and mandi price tools for time-sensitive questions | Implemented |
 | MCP | Dedicated MCP server exposing agriculture and weather tools | Implemented |
 | Agents | Tool-selection policy layered above the LangGraph workflow | Implemented |
-| Streaming | Token streaming from AI service through Node to React | Planned |
+| Streaming | Token streaming from AI service through Node to React | Implemented |
 | Evaluations and observability | Test dataset, retrieval metrics, traces, and feedback | Planned |
 
 ## Portfolio flow
@@ -128,6 +128,10 @@ single value, so if multiple tools contribute to one answer, only one "wins" for
 attribution (weather > price > rag priority) — a pre-existing schema constraint, not
 something this change needed to fix.
 
+*(Since Streaming below shipped, translation moved out of the graph entirely — see that
+section — so the graph is now just `translate_extract → semantic_search →(cond)→ END |
+agent → END`, 1 conditional branch.)*
+
 ## Tool calling
 
 The weather and mandi price lookups themselves (used by both the agent above and the
@@ -147,3 +151,47 @@ itself:
    `curl.exe`'s Schannel TLS stack connects in under a second, so `crop_price.py` shells
    out to `curl` (present by default on Windows and Git for Windows) instead of using
    `httpx` like the other tools.
+
+## Streaming
+
+Scope, confirmed with the user via two clarifying questions: stream only the **final
+answer text** (the multi-step `translate_extract`/`semantic_search`/`agent` pipeline
+stays invisible, exactly as before — no progress events for tool calls), and **keep
+English free** — English answers still return as a single immediate chunk with zero
+extra LLM cost or latency, exactly as before this change. Only non-English answers get
+a real token-by-token streamed translation.
+
+**Why translation had to leave the LangGraph graph.** `_translate_back` used to be the
+graph's last node, reached via one `ainvoke()` call that only returns once everything is
+done — incompatible with token-level streaming out of the endpoint. It's now two
+module-level functions in `workflow.py`: `translate_answer(...)` (awaited in full, used
+by the unchanged `/internal/chat` endpoint) and `translate_answer_stream(...)` (an async
+generator yielding text deltas via `client.responses.create(..., stream=True)`, used by
+the new streaming endpoint). Verified live during planning: `stream=True` yields
+`response.output_text.delta` events with a `.delta` string each — confirmed 512 delta
+events for one real Hindi translation, vs. exactly 1 for the English fast path (whole
+text, no model call) and exactly 1 for the never-translate-status-messages case
+(preserved unchanged from before this phase).
+
+**Three-service plumbing**, all newly added, none of the existing endpoints removed:
+- `agri-assistant-ai/app/main.py`: `POST /internal/chat/stream` — `StreamingResponse`
+  (`text/event-stream`) wrapping `workflow.stream_question(...)`, which yields
+  `{"type": "metadata", ...}` once (crop/location/similarity/source/sources — same
+  fields as `ChatResponse`), then one or more `{"type": "delta", "text": ...}`, then
+  `{"type": "done"}`.
+- `agri-assistant-backend/src/server.ts`: `POST /api/chat/stream` — persists the user
+  message as before, then relays FastAPI's SSE stream to the browser chunk-by-chunk
+  (buffering only to find `\n\n`-delimited SSE frames, never buffering the whole
+  response), injecting `conversationId` into the metadata event and accumulating the
+  full answer text so it can call the existing `persistMessage(...)` for the assistant
+  role once the stream ends — conversation persistence behavior is unchanged.
+- `agri-assistant-frontend/src/App.tsx`: reads `response.body.getReader()` manually
+  (not `EventSource`, which can't send a POST body), pushes an empty assistant message
+  on the metadata event, and appends each delta's text to it — the answer visibly types
+  in for non-English questions, appears instantly for English/status-message ones.
+
+Verified end-to-end through the real browser UI, not just direct script calls: a Hindi
+RAG question's answer visibly grew character-by-character; an English ungrounded
+question (which is also a status message, so double-covers both fast-path rules)
+appeared instantly with no typing effect; Mongo persistence confirmed correct for both
+the user and assistant messages after a streamed exchange.

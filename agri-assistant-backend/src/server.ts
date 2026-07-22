@@ -86,6 +86,88 @@ app.post("/api/chat", async (request: Request<{}, {}, ChatRequest>, response: Re
   }
 });
 
+app.post("/api/chat/stream", async (request: Request<{}, {}, ChatRequest>, response: Response) => {
+  const question = request.body.question?.trim();
+  const language = languageNames[request.body.language ?? "en"] ? request.body.language ?? "en" : "en";
+
+  if (!question) {
+    response.status(400).json({ error: "A question is required." });
+    return;
+  }
+
+  const conversationId = request.body.conversationId ?? randomUUID();
+
+  try {
+    await persistMessage(conversationId, {
+      role: "user",
+      content: question,
+      language,
+      createdAt: new Date()
+    });
+
+    const aiResponse = await fetch(`${aiServiceUrl}/internal/chat/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question, language, conversationId })
+    });
+    if (!aiResponse.ok || !aiResponse.body) throw new Error("AI service stream request failed");
+
+    response.setHeader("Content-Type", "text/event-stream");
+    response.setHeader("Cache-Control", "no-cache");
+    response.setHeader("Connection", "keep-alive");
+    response.flushHeaders();
+
+    let answerText = "";
+    let metadata: Record<string, unknown> = {};
+    let buffer = "";
+    const reader = aiResponse.body.getReader();
+    const decoder = new TextDecoder();
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      let separatorIndex: number;
+      while ((separatorIndex = buffer.indexOf("\n\n")) !== -1) {
+        const rawEvent = buffer.slice(0, separatorIndex);
+        buffer = buffer.slice(separatorIndex + 2);
+        const line = rawEvent.split("\n").find((entry) => entry.startsWith("data: "));
+        if (!line) continue;
+        const event = JSON.parse(line.slice("data: ".length)) as { type: string; text?: string; [key: string]: unknown };
+
+        if (event.type === "metadata") {
+          metadata = event;
+          response.write(`data: ${JSON.stringify({ ...event, conversationId })}\n\n`);
+        } else {
+          if (event.type === "delta") answerText += event.text ?? "";
+          response.write(`data: ${JSON.stringify(event)}\n\n`);
+        }
+      }
+    }
+
+    await persistMessage(conversationId, {
+      role: "assistant",
+      content: answerText,
+      questionEnglish: metadata.questionEnglish,
+      crop: metadata.crop,
+      location: metadata.location,
+      source: metadata.source,
+      similarity: metadata.similarity,
+      sources: metadata.sources,
+      createdAt: new Date()
+    });
+    response.end();
+  } catch (error) {
+    console.error("AI service stream request failed", error);
+    if (!response.headersSent) {
+      response.status(503).json({ error: "The AI service is unavailable. Start the FastAPI service and try again." });
+    } else {
+      response.end();
+    }
+  }
+});
+
 async function persistMessage(conversationId: string, message: Record<string, unknown>) {
   if (!database) return;
   const now = new Date();

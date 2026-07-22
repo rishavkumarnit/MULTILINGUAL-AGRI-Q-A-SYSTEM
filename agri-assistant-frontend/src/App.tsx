@@ -23,30 +23,72 @@ export default function App() {
     setQuestion("");
     setError("");
     setIsLoading(true);
+
     try {
-      const result = await fetch("/api/chat", {
+      const result = await fetch("/api/chat/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ question: value, language })
       });
-      const responseText = await result.text();
-      let body: { answer?: string; error?: string; crop?: string | null; location?: string | null; similarity?: number | null; sources?: string[] | null };
-      try {
-        body = JSON.parse(responseText) as typeof body;
-      } catch {
-        throw new Error(`The API returned an unexpected response (HTTP ${result.status}). Ensure the correct Node backend is running on port 4000.`);
+
+      if (!result.ok || !result.body) {
+        let message = `The API returned an unexpected response (HTTP ${result.status}). Ensure the correct Node backend is running on port 4000.`;
+        try {
+          const body = JSON.parse(await result.text()) as { error?: string };
+          if (body.error) message = body.error;
+        } catch {
+          // keep the default message above
+        }
+        throw new Error(message);
       }
-      if (!result.ok) throw new Error(body.error ?? "Unable to get an answer.");
-      setMessages((current) => [...current, {
-        role: "assistant", content: body.answer ?? "",
-        context: { crop: body.crop, location: body.location, similarity: body.similarity, sources: body.sources }
-      }]);
+
+      let assistantAdded = false;
+      let buffer = "";
+      const reader = result.body.getReader();
+      const decoder = new TextDecoder();
+
+      while (true) {
+        const { done, value: chunk } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(chunk, { stream: true });
+
+        let separatorIndex: number;
+        while ((separatorIndex = buffer.indexOf("\n\n")) !== -1) {
+          const rawEvent = buffer.slice(0, separatorIndex);
+          buffer = buffer.slice(separatorIndex + 2);
+          const line = rawEvent.split("\n").find((entry) => entry.startsWith("data: "));
+          if (!line) continue;
+          const streamEvent = JSON.parse(line.slice("data: ".length)) as {
+            type: string; text?: string;
+            crop?: string | null; location?: string | null; similarity?: number | null; sources?: string[] | null;
+          };
+
+          if (streamEvent.type === "metadata") {
+            assistantAdded = true;
+            setMessages((current) => [...current, {
+              role: "assistant", content: "",
+              context: { crop: streamEvent.crop, location: streamEvent.location, similarity: streamEvent.similarity, sources: streamEvent.sources }
+            }]);
+          } else if (streamEvent.type === "delta") {
+            setMessages((current) => {
+              const next = [...current];
+              const last = next[next.length - 1];
+              if (last?.role === "assistant") next[next.length - 1] = { ...last, content: last.content + (streamEvent.text ?? "") };
+              return next;
+            });
+          }
+        }
+      }
+
+      if (!assistantAdded) throw new Error("No response received from the assistant.");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to get an answer.");
     } finally {
       setIsLoading(false);
     }
   }
+
+  const isStreamingAssistantMessage = isLoading && messages[messages.length - 1]?.role === "assistant";
 
   return <main className="page">
     <section className="hero">
@@ -75,7 +117,7 @@ export default function App() {
           {message.context.sources && message.context.sources.length > 0 && <span>Sources: {message.context.sources.join(", ")}</span>}
         </div>}
       </article>)}
-      {isLoading && <article className="message assistant"><span>Krishi Sahayak</span><p>Thinking…</p></article>}
+      {isLoading && !isStreamingAssistantMessage && <article className="message assistant"><span>Krishi Sahayak</span><p>Thinking…</p></article>}
     </section>
 
     <form className="composer" onSubmit={submit}>

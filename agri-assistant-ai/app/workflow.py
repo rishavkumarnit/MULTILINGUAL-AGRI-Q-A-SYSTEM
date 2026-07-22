@@ -1,9 +1,12 @@
 """LangGraph state machine for the AI workflow: translate/extract, then verified-answer
-reuse, then an agent that decides which tools (if any) to call, then translate back."""
+reuse, then an agent that decides which tools (if any) to call. Translation back into
+the requested language happens outside the graph (see translate_answer/
+translate_answer_stream) so the streaming endpoint can token-stream it."""
 
 import json
 import os
 import re
+from collections.abc import AsyncIterator
 from typing import TypedDict
 
 from dotenv import load_dotenv
@@ -85,7 +88,7 @@ async def _semantic_search(state: WorkflowState) -> dict:
 
 
 def _route_after_semantic_search(state: WorkflowState) -> str:
-    return "translate_back" if state.get("verified_match") else "agent"
+    return "end" if state.get("verified_match") else "agent"
 
 
 async def _agent(state: WorkflowState) -> dict:
@@ -98,41 +101,50 @@ async def _agent(state: WorkflowState) -> dict:
     return {"answer_english": result.answer_english, "source": result.source, "sources": result.sources}
 
 
-def _route_after_agent(state: WorkflowState) -> str:
-    return "translate_back" if state["source"] != "translation-extraction" else "end"
-
-
-async def _translate_back(state: WorkflowState) -> dict:
-    """Reuse trusted English knowledge while respecting the selected response language."""
-    request = state["request"]
-    answer_english = state["answer_english"]
-    if request.language == "en":
-        return {"answer_english": answer_english}
-    client = AsyncOpenAI()
-    response = await client.responses.create(
-        model=os.getenv("OPENAI_MODEL", "gpt-5-mini"),
-        instructions=TRANSLATE_BACK_PROMPT.format(language=LANGUAGE_NAMES.get(request.language, "English")),
-        input=answer_english,
-    )
-    return {"answer_english": response.output_text}
-
-
 def _build_graph():
     builder = StateGraph(WorkflowState)
     builder.add_node("translate_extract", _translate_extract)
     builder.add_node("semantic_search", _semantic_search)
     builder.add_node("agent", _agent)
-    builder.add_node("translate_back", _translate_back)
 
     builder.add_edge(START, "translate_extract")
     builder.add_edge("translate_extract", "semantic_search")
-    builder.add_conditional_edges("semantic_search", _route_after_semantic_search, ["translate_back", "agent"])
-    builder.add_conditional_edges("agent", _route_after_agent, {"translate_back": "translate_back", "end": END})
-    builder.add_edge("translate_back", END)
+    builder.add_conditional_edges("semantic_search", _route_after_semantic_search, {"end": END, "agent": "agent"})
+    builder.add_edge("agent", END)
     return builder.compile()
 
 
 _graph = _build_graph()
+
+
+async def translate_answer(answer_english: str, language: str) -> str:
+    """Reuse trusted English knowledge while respecting the selected response language."""
+    if language == "en":
+        return answer_english
+    client = AsyncOpenAI()
+    response = await client.responses.create(
+        model=os.getenv("OPENAI_MODEL", "gpt-5-mini"),
+        instructions=TRANSLATE_BACK_PROMPT.format(language=LANGUAGE_NAMES.get(language, "English")),
+        input=answer_english,
+    )
+    return response.output_text
+
+
+async def translate_answer_stream(answer_english: str, language: str) -> AsyncIterator[str]:
+    """Same as translate_answer, but yields text deltas as they arrive for language != 'en'."""
+    if language == "en":
+        yield answer_english
+        return
+    client = AsyncOpenAI()
+    stream = await client.responses.create(
+        model=os.getenv("OPENAI_MODEL", "gpt-5-mini"),
+        instructions=TRANSLATE_BACK_PROMPT.format(language=LANGUAGE_NAMES.get(language, "English")),
+        input=answer_english,
+        stream=True,
+    )
+    async for event in stream:
+        if event.type == "response.output_text.delta":
+            yield event.delta
 
 
 async def process_question(request: ChatRequest) -> ChatResponse:
@@ -140,15 +152,59 @@ async def process_question(request: ChatRequest) -> ChatResponse:
         return _development_fallback(request)
 
     final_state = await _graph.ainvoke({"request": request})
+    answer_english = final_state["answer_english"]
+    source = final_state["source"]
+    answer = answer_english if source == "translation-extraction" else await translate_answer(answer_english, request.language)
     return ChatResponse(
-        answer=final_state["answer_english"],
+        answer=answer,
         questionEnglish=final_state["question_english"],
         crop=final_state.get("crop"),
         location=final_state.get("location"),
         similarity=final_state.get("similarity"),
-        source=final_state["source"],
+        source=source,
         sources=final_state.get("sources"),
     )
+
+
+async def stream_question(request: ChatRequest) -> AsyncIterator[dict]:
+    """Same pipeline as process_question, but yields {"type": "metadata"|"delta"|"done", ...}
+    dicts so the caller can stream the final answer text as it's generated. The
+    multi-step pipeline up to the English answer is not streamed, only the final
+    presentation/translation step is (or, for English, sent as a single delta)."""
+    if not os.getenv("OPENAI_API_KEY"):
+        fallback = _development_fallback(request)
+        yield {
+            "type": "metadata",
+            "questionEnglish": fallback.question_english,
+            "crop": fallback.crop,
+            "location": fallback.location,
+            "similarity": fallback.similarity,
+            "source": fallback.source,
+            "sources": fallback.sources,
+        }
+        yield {"type": "delta", "text": fallback.answer}
+        yield {"type": "done"}
+        return
+
+    final_state = await _graph.ainvoke({"request": request})
+    answer_english = final_state["answer_english"]
+    source = final_state["source"]
+    yield {
+        "type": "metadata",
+        "questionEnglish": final_state["question_english"],
+        "crop": final_state.get("crop"),
+        "location": final_state.get("location"),
+        "similarity": final_state.get("similarity"),
+        "source": source,
+        "sources": final_state.get("sources"),
+    }
+
+    if source == "translation-extraction" or request.language == "en":
+        yield {"type": "delta", "text": answer_english}
+    else:
+        async for chunk in translate_answer_stream(answer_english, request.language):
+            yield {"type": "delta", "text": chunk}
+    yield {"type": "done"}
 
 
 def _development_fallback(request: ChatRequest) -> ChatResponse:
