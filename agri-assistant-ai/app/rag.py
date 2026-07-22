@@ -60,9 +60,10 @@ async def find_relevant_chunks(question_english: str, top_k: int | None = None) 
     return chunks
 
 
-async def generate_rag_answer(question_english: str, chunks: list[RetrievedChunk], client: AsyncOpenAI) -> str:
+async def generate_rag_answer(question_english: str, chunks: list[RetrievedChunk]) -> str:
     """Generate an answer grounded only in the retrieved document chunks."""
     context = "\n\n".join(f"[{chunk.title}]\n{chunk.text}" for chunk in chunks)
+    client = AsyncOpenAI()
     response = await client.responses.create(
         model=os.getenv("OPENAI_MODEL", "gpt-5-mini"),
         instructions=(
