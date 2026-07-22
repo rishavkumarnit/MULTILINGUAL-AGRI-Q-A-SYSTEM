@@ -5,11 +5,18 @@ indefinitely on Python's OpenSSL-based TLS handshake (reproduced with both httpx
 and stdlib urllib) while curl.exe's Schannel TLS stack connects in well under a
 second. curl.exe ships with Windows (System32) and Git for Windows, so it is
 reliably available without adding a dependency.
+
+Runs curl via subprocess.run() in a thread executor rather than
+asyncio.create_subprocess_exec(): uvicorn forces WindowsSelectorEventLoopPolicy
+whenever --reload is active (needed for its own reload supervisor), and asyncio's
+native subprocess transport isn't implemented on that loop on Windows. A thread-pool
+blocking call works under any event loop.
 """
 
 import asyncio
 import json
 import os
+import subprocess
 from dataclasses import dataclass
 from datetime import datetime
 from urllib.parse import urlencode
@@ -63,15 +70,13 @@ async def _query(api_key: str, commodity: str, extra_filters: dict[str, str]) ->
     url = f"{AGMARKNET_BASE_URL}?{urlencode(params)}"
 
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "curl", "-sS", "-m", "15", url,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        result = await asyncio.get_running_loop().run_in_executor(
+            None, lambda: subprocess.run(["curl", "-sS", "-m", "15", url], capture_output=True, timeout=20)
         )
-        stdout, _stderr = await proc.communicate()
-        if proc.returncode != 0:
+        if result.returncode != 0:
             return []
-        data = json.loads(stdout)
-    except (OSError, json.JSONDecodeError):
+        data = json.loads(result.stdout)
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
         return []
     return data.get("records", [])
 
