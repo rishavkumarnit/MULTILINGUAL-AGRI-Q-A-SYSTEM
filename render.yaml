@@ -8,6 +8,12 @@ services:
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:
+      # Render's default Python image is too new to have a prebuilt tiktoken wheel,
+      # which makes pip fall back to a from-source Rust build that fails on Render's
+      # read-only build filesystem (no cargo cache dir). Pin to a version tiktoken
+      # already ships wheels for.
+      - key: PYTHON_VERSION
+        value: 3.13.7
       - key: OPENAI_API_KEY
         sync: false
       - key: OPENAI_MODEL
