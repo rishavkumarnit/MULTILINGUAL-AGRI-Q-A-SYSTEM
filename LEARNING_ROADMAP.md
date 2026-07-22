@@ -11,7 +11,7 @@ This project is intentionally a single, portfolio-ready system that demonstrates
 | Context-aware retrieval | Crop and location filters on vector search | Implemented |
 | Conversation persistence | Node API + MongoDB `conversations` collection | Implemented |
 | RAG | Trusted agricultural document ingestion and chunk retrieval | Implemented |
-| LangChain | Document loaders, chunking, retrievers, prompt templates | Planned |
+| LangChain | Document loaders, chunking, retrievers, prompt templates | Implemented |
 | LangGraph | Explicit state graph for the assistant workflow | Implemented |
 | Tool calling | Weather and mandi price tools for time-sensitive questions | Implemented |
 | MCP | Dedicated MCP server exposing agriculture and weather tools | Planned |
@@ -24,6 +24,43 @@ This project is intentionally a single, portfolio-ready system that demonstrates
 `React → Node API → FastAPI → translate/extract → embedding + Atlas Vector Search → reuse or RAG → LLM → translate → React`
 
 Each stage is intentionally separate, so you can explain its responsibility, data, and evaluation method in interviews.
+
+## LangChain
+
+The four named patterns are demonstrated without changing the app's response contract
+or behavior — this was a portfolio/interview-value swap of internals, not a feature.
+
+- **Document loaders**: `scripts/ingest_document.py` loads source files via
+  `langchain_community.document_loaders.TextLoader` instead of a raw `Path.read_text()`.
+  (`langchain-community` carries a "being sunset" deprecation notice upstream but still
+  works and is the pattern most tutorials/interviews reference — noted here so it isn't
+  a surprise later.)
+- **Chunking**: the hand-rolled token-window splitter (`app/chunking.py`, now deleted)
+  was replaced with `langchain_text_splitters.RecursiveCharacterTextSplitter
+  .from_tiktoken_encoder(...)`, same `chunk_size=300, chunk_overlap=50` defaults.
+- **Retrievers**: `agri-assistant-ai/app/retrievers.py` defines `AtlasVectorRetriever`,
+  a custom `langchain_core.retrievers.BaseRetriever` subclass wrapping the app's
+  existing async MongoDB `$vectorSearch` aggregation. **Deliberately not using**
+  `langchain-mongodb`'s prebuilt `MongoDBAtlasVectorSearch`: it only supports a
+  synchronous `pymongo.Collection` (no working async-native support), which would have
+  required a second, separate sync Mongo connection alongside the app's existing
+  `AsyncMongoClient`. `semantic_search.py` and `rag.py` now build an
+  `AtlasVectorRetriever` internally but keep their original function signatures and
+  return types — no callers changed.
+- **Prompt templates**: `langchain_core.prompts.PromptTemplate` builds the text for the
+  extraction input, the RAG generation prompt, and the translate-back instructions in
+  `workflow.py`/`rag.py`. The actual model calls are still `AsyncOpenAI().responses
+  .create(...)` with strict `json_schema` structured outputs — deliberately not switched
+  to `langchain_openai.ChatOpenAI`, since that call pattern was only just tuned to fix
+  an intent-classification reliability bug and isn't worth re-risking.
+- **Embeddings**: `langchain_openai.OpenAIEmbeddings` (async `aembed_query`/
+  `aembed_documents`) replaced the manual `client.embeddings.create(...)` calls
+  everywhere embeddings are generated (retrievers, both ingestion scripts).
+
+**Dependency note:** `langchain-openai` requires `openai>=1.109.1` — bumped from the
+previously pinned `openai==1.99.9` (both are pre-2.0 releases; the `openai` 2.x line
+requires `langchain-openai>=1.2`, which was avoided specifically to not risk the tuned
+`responses.create`/structured-output call sites on a major SDK version).
 
 ## Tool calling
 

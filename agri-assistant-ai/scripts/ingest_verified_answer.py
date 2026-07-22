@@ -5,7 +5,7 @@ import asyncio
 import os
 from datetime import datetime, timezone
 
-from openai import AsyncOpenAI
+from langchain_openai import OpenAIEmbeddings
 
 from app.database import close_database, connect_database, get_database
 
@@ -25,15 +25,15 @@ async def main() -> None:
         raise RuntimeError("MONGODB_URI must be configured in .env")
 
     embedding_model = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
-    client = AsyncOpenAI()
-    response = await client.embeddings.create(model=embedding_model, input=arguments.question)
+    embeddings = OpenAIEmbeddings(model=embedding_model)
+    embedding_vector = await embeddings.aembed_query(arguments.question)
     document = {
         "questionEnglish": arguments.question,
         "answerEnglish": arguments.answer,
         "crop": arguments.crop.strip().lower(),
         "location": arguments.location.strip().lower(),
         "status": arguments.status,
-        "embedding": response.data[0].embedding,
+        "embedding": embedding_vector,
         "embeddingModel": embedding_model,
         "updatedAt": datetime.now(timezone.utc),
     }
