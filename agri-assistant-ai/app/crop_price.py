@@ -1,0 +1,98 @@
+"""Live crop price lookup via the data.gov.in Agmarknet market-prices API.
+
+Uses the system curl binary rather than httpx: api.data.gov.in's server hangs
+indefinitely on Python's OpenSSL-based TLS handshake (reproduced with both httpx
+and stdlib urllib) while curl.exe's Schannel TLS stack connects in well under a
+second. curl.exe ships with Windows (System32) and Git for Windows, so it is
+reliably available without adding a dependency.
+"""
+
+import asyncio
+import json
+import os
+from dataclasses import dataclass
+from datetime import datetime
+from urllib.parse import urlencode
+
+AGMARKNET_RESOURCE_ID = "9ef84268-d588-465a-a308-a864a43d0070"
+AGMARKNET_BASE_URL = f"https://api.data.gov.in/resource/{AGMARKNET_RESOURCE_ID}"
+
+
+@dataclass
+class CropPrice:
+    commodity: str
+    state: str
+    market: str
+    modal_price: float
+    min_price: float
+    max_price: float
+    arrival_date: str
+
+
+async def fetch_crop_price(crop: str, location: str | None) -> CropPrice | None:
+    """Look up the most recent modal price for a crop, optionally scoped to a location.
+
+    Tries the location as a district first, then as a state, then falls back to a
+    nationwide lookup, since farmers typically state a city/district rather than a
+    state name. Returns None on any failure or empty result set instead of raising,
+    matching the fail-soft pattern used by the semantic_search/rag/weather tools.
+    """
+    api_key = os.getenv("DATA_GOV_IN_API_KEY")
+    if not api_key:
+        return None
+
+    commodity = crop.strip().title()
+    attempts: list[dict[str, str]] = []
+    if location:
+        location_title = location.strip().title()
+        attempts.append({"district": location_title})
+        attempts.append({"state": location_title})
+    attempts.append({})
+
+    for extra_filters in attempts:
+        records = await _query(api_key, commodity, extra_filters)
+        if records:
+            return _pick_latest(records, commodity)
+    return None
+
+
+async def _query(api_key: str, commodity: str, extra_filters: dict[str, str]) -> list[dict]:
+    params = {"api-key": api_key, "format": "json", "limit": "50", "filters[commodity]": commodity}
+    for field, value in extra_filters.items():
+        params[f"filters[{field}]"] = value
+    url = f"{AGMARKNET_BASE_URL}?{urlencode(params)}"
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "curl", "-sS", "-m", "15", url,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _stderr = await proc.communicate()
+        if proc.returncode != 0:
+            return []
+        data = json.loads(stdout)
+    except (OSError, json.JSONDecodeError):
+        return []
+    return data.get("records", [])
+
+
+def _pick_latest(records: list[dict], commodity: str) -> CropPrice | None:
+    def parse_date(record: dict) -> datetime:
+        try:
+            return datetime.strptime(record["arrival_date"], "%d/%m/%Y")
+        except (KeyError, ValueError):
+            return datetime.min
+
+    latest = max(records, key=parse_date)
+    try:
+        return CropPrice(
+            commodity=commodity,
+            state=latest["state"],
+            market=latest["market"],
+            modal_price=float(latest["modal_price"]),
+            min_price=float(latest["min_price"]),
+            max_price=float(latest["max_price"]),
+            arrival_date=latest["arrival_date"],
+        )
+    except (KeyError, ValueError):
+        return None

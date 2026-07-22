@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from langgraph.graph import END, START, StateGraph
 from openai import AsyncOpenAI
 
+from .crop_price import CropPrice, fetch_crop_price
 from .models import ChatRequest, ChatResponse
 from .rag import RetrievedChunk, find_relevant_chunks, generate_rag_answer
 from .semantic_search import SemanticMatch, find_verified_match
@@ -29,8 +30,12 @@ EXTRACTION_SCHEMA = {
         "location": {"type": ["string", "null"], "description": "District, village, state, or location explicitly mentioned, or null."},
         "intent": {
             "type": "string",
-            "enum": ["weather", "general"],
-            "description": "weather if the farmer is asking about weather, rain, or forecast; general otherwise.",
+            "enum": ["weather", "price", "general"],
+            "description": (
+                "weather if the farmer is asking about weather, rain, or forecast; "
+                "price if the farmer is asking about market rate, price, or how much a crop sells for; "
+                "general otherwise."
+            ),
         },
     },
     "required": ["questionEnglish", "crop", "location", "intent"],
@@ -44,6 +49,7 @@ class WorkflowState(TypedDict, total=False):
     location: str | None
     intent: str
     forecast: WeatherForecast | None
+    price: CropPrice | None
     verified_match: SemanticMatch | None
     chunks: list[RetrievedChunk]
     answer_english: str
@@ -61,7 +67,10 @@ async def _translate_extract(state: WorkflowState) -> dict:
         instructions=(
             "You are the preprocessing stage for an agricultural assistant. "
             "Translate the farmer's question faithfully into English. Extract a crop and location "
-            "only when explicitly stated; never guess either one. Return only the requested JSON."
+            "only when explicitly stated; never guess either one. "
+            "Classify intent as 'weather' if the question asks about weather, rain, temperature, or forecast; "
+            "'price' if it asks about market rate, mandi price, or how much a crop sells for; "
+            "'general' for everything else. Return only the requested JSON."
         ),
         input=f"Selected response language: {LANGUAGE_NAMES.get(request.language, 'English')}\nQuestion: {request.question}",
         text={"format": {"type": "json_schema", "name": "agri_question_context", "strict": True, "schema": EXTRACTION_SCHEMA}},
@@ -76,7 +85,11 @@ async def _translate_extract(state: WorkflowState) -> dict:
 
 
 def _route_after_extraction(state: WorkflowState) -> str:
-    return "fetch_weather" if state["intent"] == "weather" and state.get("location") else "semantic_search"
+    if state["intent"] == "weather" and state.get("location"):
+        return "fetch_weather"
+    if state["intent"] == "price" and state.get("crop"):
+        return "fetch_price"
+    return "semantic_search"
 
 
 async def _fetch_weather(state: WorkflowState) -> dict:
@@ -102,6 +115,29 @@ def _weather_answer_text(forecast: WeatherForecast) -> str:
             f"{day.precipitation_probability}% chance of rain ({day.precipitation_mm:.1f} mm)"
         )
     return "\n".join(lines)
+
+
+async def _fetch_price(state: WorkflowState) -> dict:
+    price = await fetch_crop_price(state["crop"], state.get("location"))
+    if not price:
+        return {"price": None}
+    return {
+        "price": price,
+        "answer_english": _price_answer_text(price),
+        "source": "price-lookup",
+    }
+
+
+def _route_after_price(state: WorkflowState) -> str:
+    return "translate_back" if state.get("price") else "semantic_search"
+
+
+def _price_answer_text(price: CropPrice) -> str:
+    return (
+        f"The latest modal price for {price.commodity} at {price.market}, {price.state} "
+        f"(as of {price.arrival_date}) is Rs {price.modal_price:.0f} per quintal "
+        f"(range Rs {price.min_price:.0f}-{price.max_price:.0f})."
+    )
 
 
 async def _semantic_search(state: WorkflowState) -> dict:
@@ -168,6 +204,7 @@ def _build_graph():
     builder = StateGraph(WorkflowState)
     builder.add_node("translate_extract", _translate_extract)
     builder.add_node("fetch_weather", _fetch_weather)
+    builder.add_node("fetch_price", _fetch_price)
     builder.add_node("semantic_search", _semantic_search)
     builder.add_node("rag_retrieve", _rag_retrieve)
     builder.add_node("generate_rag_answer", _generate_rag_answer)
@@ -175,8 +212,9 @@ def _build_graph():
     builder.add_node("translate_back", _translate_back)
 
     builder.add_edge(START, "translate_extract")
-    builder.add_conditional_edges("translate_extract", _route_after_extraction, ["fetch_weather", "semantic_search"])
+    builder.add_conditional_edges("translate_extract", _route_after_extraction, ["fetch_weather", "fetch_price", "semantic_search"])
     builder.add_conditional_edges("fetch_weather", _route_after_weather, ["translate_back", "semantic_search"])
+    builder.add_conditional_edges("fetch_price", _route_after_price, ["translate_back", "semantic_search"])
     builder.add_conditional_edges("semantic_search", _route_after_semantic_search, ["translate_back", "rag_retrieve"])
     builder.add_conditional_edges("rag_retrieve", _route_after_rag_retrieve, ["generate_rag_answer", "status_message"])
     builder.add_edge("generate_rag_answer", "translate_back")

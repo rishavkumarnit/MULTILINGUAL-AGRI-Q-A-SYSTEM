@@ -13,7 +13,7 @@ This project is intentionally a single, portfolio-ready system that demonstrates
 | RAG | Trusted agricultural document ingestion and chunk retrieval | Implemented |
 | LangChain | Document loaders, chunking, retrievers, prompt templates | Planned |
 | LangGraph | Explicit state graph for the assistant workflow | Implemented |
-| Tool calling | Weather and location tools for time-sensitive questions | In progress (weather done, mandi price pending) |
+| Tool calling | Weather and mandi price tools for time-sensitive questions | Implemented |
 | MCP | Dedicated MCP server exposing agriculture and weather tools | Planned |
 | Agents | Tool-selection policy layered above the LangGraph workflow | Planned |
 | Streaming | Token streaming from AI service through Node to React | Planned |
@@ -27,16 +27,27 @@ Each stage is intentionally separate, so you can explain its responsibility, dat
 
 ## Tool calling
 
-Two tools are planned as graph nodes/branches on top of the LangGraph workflow.
+Both tools are implemented as graph nodes/branches on top of the LangGraph workflow.
+The extraction step classifies `intent: "weather" | "price" | "general"` in the same
+structured-output call that already extracts crop/location, so routing costs no extra
+LLM round trip.
 
-1. **Weather forecast tool** — Implemented. `agri-assistant-ai/app/weather.py` geocodes the
+1. **Weather forecast tool** — `agri-assistant-ai/app/weather.py` geocodes the
    extracted location and fetches a 5-day forecast from Open-Meteo (no API key needed).
-   The extraction step now classifies `intent: "weather" | "general"`; when `intent` is
-   `weather` and a location was given, the graph routes to a `fetch_weather` node before
-   falling back to the normal semantic-search/RAG pipeline if the location can't be
-   resolved or the API call fails. Response `source: "weather-forecast"`.
-2. **Mandi price tool** — Not started. Crop market price lookup via the data.gov.in
-   Agmarknet API (resource `9ef84268-d588-465a-a308-a864a43d0070`), triggered when the
-   question is about price/rate. Deliberately built last. A free API key has already been
-   obtained and is set as `DATA_GOV_IN_API_KEY` in `agri-assistant-ai/.env` (gitignored,
-   not committed); the placeholder is in `.env.example`.
+   When `intent` is `weather` and a location was given, the graph routes to a
+   `fetch_weather` node before falling back to the normal semantic-search/RAG pipeline
+   if the location can't be resolved or the API call fails. Response
+   `source: "weather-forecast"`.
+2. **Mandi price tool** — `agri-assistant-ai/app/crop_price.py` looks up the latest
+   modal price for a crop via the data.gov.in Agmarknet API (resource
+   `9ef84268-d588-465a-a308-a864a43d0070`), trying the extracted location as a district,
+   then a state, then falling back to a nationwide lookup. When `intent` is `price` and
+   a crop was given, the graph routes to a `fetch_price` node, falling back to the
+   normal pipeline if no price data is found. Response `source: "price-lookup"`.
+   Requires `DATA_GOV_IN_API_KEY` in `agri-assistant-ai/.env` (already set locally,
+   gitignored; placeholder in `.env.example`).
+   **Implementation note:** this API's server hangs indefinitely on Python's
+   OpenSSL-based TLS handshake (reproduced with both `httpx` and stdlib `urllib`) while
+   `curl.exe`'s Schannel TLS stack connects in under a second, so `crop_price.py` shells
+   out to `curl` (present by default on Windows and Git for Windows) instead of using
+   `httpx` like the other tools.
