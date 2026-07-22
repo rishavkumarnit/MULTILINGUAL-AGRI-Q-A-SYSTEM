@@ -14,6 +14,7 @@ from .rag import RetrievedChunk, find_relevant_chunks
 from .weather import fetch_weather_forecast, format_forecast
 
 MAX_TOOL_ROUNDS = 4
+ANSWER_TOKEN_CAP = 300  # forces brevity; the model otherwise ignores length instructions
 
 AGENT_INSTRUCTIONS = (
     "You are an agricultural assistant for Indian farmers. You have tools for weather "
@@ -21,7 +22,14 @@ AGENT_INSTRUCTIONS = (
     "whichever tools would help answer the question — none, one, or several. "
     "Only state facts that came from a tool result. If no tool call returns useful "
     "information, say plainly that you don't have grounded information to answer, "
-    "rather than guessing from general knowledge. Return only the answer in plain English."
+    "rather than guessing from general knowledge. "
+    "Keep the answer very short: at most 5-10 sentences total. If the question needs "
+    "step-by-step guidance, use at most one bulleted list of up to 5 items, one short "
+    "sentence each, instead of the sentences — never both. Never use headings, numbered "
+    "sections, or multiple lists; give the single most useful answer directly instead of "
+    "a full guide covering every angle. Do not restate the question, add disclaimers, "
+    "or ask a follow-up question unless essential information is missing. Return only "
+    "the answer in plain English."
 )
 
 TOOLS = [
@@ -94,7 +102,8 @@ async def run_agent(question_english: str, crop: str | None, location: str | Non
     chunks_found: list[RetrievedChunk] = []
 
     response = await client.responses.create(
-        model=model, instructions=AGENT_INSTRUCTIONS, input="\n".join(context_lines), tools=TOOLS
+        model=model, instructions=AGENT_INSTRUCTIONS, input="\n".join(context_lines), tools=TOOLS,
+        reasoning={"effort": "minimal"}, max_output_tokens=ANSWER_TOKEN_CAP,
     )
 
     for _ in range(MAX_TOOL_ROUNDS):
@@ -109,19 +118,33 @@ async def run_agent(question_english: str, crop: str | None, location: str | Non
             price_found = price_found or price
             chunks_found.extend(chunks)
             outputs.append({"type": "function_call_output", "call_id": call.call_id, "output": result_text})
-        response = await client.responses.create(model=model, previous_response_id=response.id, input=outputs, tools=TOOLS)
+        response = await client.responses.create(
+            model=model, previous_response_id=response.id, input=outputs, tools=TOOLS,
+            reasoning={"effort": "minimal"}, max_output_tokens=ANSWER_TOKEN_CAP,
+        )
+
+    answer_text = _trim_if_cut_off(response.output_text, getattr(response, "status", None))
 
     if forecast_found:
-        return AgentResult(answer_english=response.output_text or format_forecast(forecast_found), source="weather-forecast")
+        return AgentResult(answer_english=answer_text or format_forecast(forecast_found), source="weather-forecast")
     if price_found:
-        return AgentResult(answer_english=response.output_text or format_price(price_found), source="price-lookup")
+        return AgentResult(answer_english=answer_text or format_price(price_found), source="price-lookup")
     if chunks_found:
         return AgentResult(
-            answer_english=response.output_text or "\n\n".join(chunk.text for chunk in chunks_found),
+            answer_english=answer_text or "\n\n".join(chunk.text for chunk in chunks_found),
             source="rag-generated",
             sources=sorted({chunk.title for chunk in chunks_found}),
         )
     return AgentResult(answer_english="", source="ungrounded")
+
+
+def _trim_if_cut_off(text: str, status: str | None) -> str:
+    """If generation hit the token cap mid-sentence, trim back to the last complete
+    sentence rather than showing a sentence broken off mid-word."""
+    if status != "incomplete" or not text:
+        return text
+    last_boundary = max(text.rfind(". "), text.rfind("? "), text.rfind("! "), text.rfind("\n"))
+    return text[: last_boundary + 1].rstrip() if last_boundary > 0 else text
 
 
 async def _execute_tool(name: str, arguments: dict):

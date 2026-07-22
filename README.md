@@ -81,6 +81,11 @@ python -m scripts.ingest_document --path data/documents/rice_pest_management.md 
 python -m scripts.ingest_document --path data/documents/soil_health_composting.md --title "Soil Health and Composting Basics"
 python -m scripts.ingest_document --path data/documents/monsoon_crop_planning.md --title "Monsoon Crop Planning"
 python -m scripts.ingest_document --path data/documents/fertilizer_application_basics.md --title "Fertilizer Application Basics"
+python -m scripts.ingest_document --path data/documents/mustard_pest_management.md --title "Mustard Pest Management" --crop mustard
+python -m scripts.ingest_document --path data/documents/cotton_pest_management.md --title "Cotton Pest Management" --crop cotton
+python -m scripts.ingest_document --path data/documents/maize_irrigation_fertilization.md --title "Maize Irrigation and Fertilization" --crop maize
+python -m scripts.ingest_document --path data/documents/potato_disease_management.md --title "Potato Disease Management" --crop potato
+python -m scripts.ingest_document --path data/documents/sugarcane_irrigation_scheduling.md --title "Sugarcane Irrigation Scheduling" --crop sugarcane
 ```
 
 The script loads the document with a LangChain `TextLoader`, chunks it with `RecursiveCharacterTextSplitter.from_tiktoken_encoder(...)`, embeds each chunk with `EMBEDDING_MODEL` via `langchain_openai.OpenAIEmbeddings`, and upserts into `document_chunks`. Re-running the same `--title` replaces its existing chunks, so it's safe to re-ingest after editing a document. Retrieval goes through `app/retrievers.py`'s `AtlasVectorRetriever` (a custom LangChain `BaseRetriever`), unfiltered by crop/location — general documents are matched by semantic similarity alone — and answers that draw on retrieved chunks are returned with `source: "rag-generated"` and a `sources` list naming the document titles used.
