@@ -1,0 +1,21 @@
+:root { font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: #173524; background: #f5f4e9; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+button, select, textarea { font: inherit; }
+.page { min-height: 100vh; max-width: 880px; margin: auto; padding: 48px 24px 32px; display: grid; gap: 24px; }
+.hero { background: #176b3a; color: white; border-radius: 24px; padding: 32px; box-shadow: 0 12px 32px #17352424; }
+.eyebrow { font-size: .72rem; letter-spacing: .13em; font-weight: 700; color: #c6e49a; }
+h1 { font-size: clamp(2.1rem, 7vw, 3.8rem); margin: 8px 0; letter-spacing: -.05em; }
+.hero p { margin: 0 0 24px; color: #e2f0d5; }
+.language-label { display: grid; gap: 6px; font-size: .84rem; font-weight: 700; width: min(250px, 100%); }
+select { border: 1px solid #9ec67b; border-radius: 8px; padding: 9px; background: white; color: #173524; }
+.chat { min-height: 280px; display: grid; align-content: start; gap: 12px; }
+.empty-state { text-align: center; align-self: center; padding: 45px 12px; color: #587061; }
+.empty-state h2 { margin: 5px 0; color: #244833; }.empty-state p { margin: 0; }.seedling { font-size: 2rem; }
+.message { max-width: 82%; border-radius: 15px; padding: 13px 16px; }.message span { display: block; font-size: .75rem; font-weight: 750; margin-bottom: 4px; }.message p { white-space: pre-wrap; margin: 0; line-height: 1.5; }
+.user { justify-self: end; background: #dcecc9; }.assistant { background: white; border: 1px solid #dfded4; }
+.context { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }.context span { display: inline-block; margin: 0; padding: 3px 7px; border-radius: 99px; background: #edf5e5; color: #31563c; font-size: .72rem; }
+.composer { background: white; padding: 16px; border: 1px solid #dfded4; border-radius: 16px; }.composer > label { display: block; font-weight: 700; margin-bottom: 8px; }
+.input-row { display: flex; gap: 10px; align-items: end; } textarea { flex: 1; resize: vertical; padding: 10px; border: 1px solid #b8c7b9; border-radius: 9px; color: #173524; }
+button { border: 0; border-radius: 9px; padding: 12px 20px; background: #176b3a; color: white; font-weight: 750; cursor: pointer; } button:disabled { opacity: .5; cursor: not-allowed; }.error { margin: 9px 0 0; color: #a42c22; }
+@media (max-width: 520px) { .page { padding: 20px 14px; }.hero { padding: 25px; }.input-row { align-items: stretch; flex-direction: column; }.message { max-width: 94%; } }
