@@ -3,14 +3,10 @@
 import os
 from dataclasses import dataclass
 
-from langchain_core.prompts import PromptTemplate
 from langchain_openai import OpenAIEmbeddings
-from openai import AsyncOpenAI
 
 from .database import get_database
 from .retrievers import AtlasVectorRetriever
-
-RAG_PROMPT = PromptTemplate.from_template("Context documents:\n{context}\n\nQuestion: {question}")
 
 
 @dataclass
@@ -45,20 +41,3 @@ async def find_relevant_chunks(question_english: str, top_k: int | None = None) 
         for document in documents
         if document.metadata["score"] >= threshold
     ]
-
-
-async def generate_rag_answer(question_english: str, chunks: list[RetrievedChunk]) -> str:
-    """Generate an answer grounded only in the retrieved document chunks."""
-    context = "\n\n".join(f"[{chunk.title}]\n{chunk.text}" for chunk in chunks)
-    client = AsyncOpenAI()
-    response = await client.responses.create(
-        model=os.getenv("OPENAI_MODEL", "gpt-5-mini"),
-        instructions=(
-            "You are an agricultural assistant. Answer the farmer's question using only the "
-            "provided context documents. Do not invent facts not present in the context. "
-            "If the context does not fully answer the question, say what is missing rather than "
-            "guessing. Return only the answer in plain English."
-        ),
-        input=RAG_PROMPT.format(context=context, question=question_english),
-    )
-    return response.output_text
